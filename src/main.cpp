@@ -10,56 +10,45 @@
 
 #include <Arduino.h>
 
+/* WiFi */
 #include <ESP8266WiFi.h> // WIFI support
-//#include <ESP8266mDNS.h> // For network discovery
-//#include <WiFiUdp.h> // OSC over UDP
 #include <ArduinoOTA.h> // Updates over the air
+char hostname[32] = {0};
 
-// WiFi Manager
+/* mDNS */
+#include <ESP8266mDNS.h>
+
+/* WiFi Manager */
 #include <DNSServer.h>
 #include <ESP8266WebServer.h>
 #include <WiFiManager.h> 
 
-// MQTT
+/* MQTT */
 #include <PubSubClient.h>
+WiFiClient wifiClient;
+PubSubClient mqtt(wifiClient);
 
 // LED
-#include <Ticker.h>
-Ticker ticker;
 int ledState = LOW;
 unsigned long ledNextRun = 0;
 
-/* WIFI */
-char hostname[32] = {0};
-
-/* MQTT */
-WiFiClient wifiClient;
-PubSubClient client(wifiClient);
-const char* broker = "10.81.95.165";
-
 /* Misc */
 unsigned long triggerTimeout = 0;
-
-void tick()
-{
-  //toggle state
-  int state = digitalRead(LED_BUILTIN);  // get the current state of GPIO1 pin
-  digitalWrite(LED_BUILTIN, !state);     // set pin to the opposite state
-}
 
 void configModeCallback (WiFiManager *myWiFiManager) {
   Serial.println(F("Config Mode"));
   Serial.println(WiFi.softAPIP());
   Serial.println(myWiFiManager->getConfigPortalSSID());
-  ticker.attach(0.2, tick);
+  digitalWrite(LED_BUILTIN, LOW);
 }
 
 void reconnect() {
-  while (!client.connected()) {
-    Serial.println("MQTT Connecting...");
-    if (client.connect(hostname)) {
+  Serial.print("MQTT Connecting");
+  while (!mqtt.connected()) {
+    if (mqtt.connect(hostname)) {
+      Serial.println();
       Serial.println("MQTT connected");
-      client.subscribe(ESP_NAME); // "relay/#"
+      mqtt.subscribe(hostname);
     } else {
       Serial.print(".");
       delay(1000);
@@ -68,9 +57,10 @@ void reconnect() {
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived [");
+  Serial.println("Message arrived");
+  Serial.print("  ");
   Serial.print(topic);
-  Serial.print("] ");
+  Serial.print(" ");
 
   for (int i = 0; i < length; i++) {
     Serial.print((char)payload[i]);
@@ -90,22 +80,20 @@ void callback(char* topic, byte* payload, unsigned int length) {
 }
 
 void setup() {
-  
-  /* Serial and I2C */
-  Serial.begin(9600);
-
   /* LED */
   pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH); // off
 
-  /* Function Select */
-  Serial.println(ESP_NAME);
+  /* Serial */
+  Serial.begin(9600);
+  Serial.println(F("Setup..."));
   
   /* WiFi */
   sprintf(hostname, "%s-%06X", ESP_NAME, ESP.getChipId());
   WiFiManager wifiManager;
   wifiManager.setAPCallback(configModeCallback);
   if(!wifiManager.autoConnect(hostname)) {
-    Serial.println("WiFi Connect Failed");
+    Serial.println(F("WiFi Connect Failed"));
     //reset and try again, or maybe put it to deep sleep
     ESP.reset();
     delay(1000);
@@ -113,7 +101,7 @@ void setup() {
 
   Serial.println(hostname);
   Serial.print(F("  "));
-  Serial.print(WiFi.localIP());
+  Serial.println(WiFi.localIP());
   Serial.print(F("  "));
   Serial.println(WiFi.macAddress());
 
@@ -146,21 +134,46 @@ void setup() {
   });
   ArduinoOTA.begin();
 
+  /* MQTT */
+
+  // Discover MQTT broker via mDNS
+  Serial.print(F("Finding MQTT Server"));
+  while (MDNS.queryService("mqtt", "tcp") == 0) {
+    delay(1000);
+    Serial.print(F("."));
+    ArduinoOTA.handle();
+  }
+  Serial.println();
+
+  Serial.println(F("MQTT: "));
+  Serial.print(F("  "));
+  Serial.println(MDNS.hostname(0));
+  Serial.print(F("  "));
+  Serial.print(MDNS.IP(0));
+  Serial.print(F(":"));
+  Serial.println(MDNS.port(0));
+
+  mqtt.setServer(MDNS.IP(0), MDNS.port(0));
+  mqtt.setCallback(callback);
+
+  /* Pins */
   pinMode(D1, OUTPUT);
   digitalWrite(D1, LOW);
-
-  /* MQTT */
-  client.setServer(broker, 1883);
-  client.setCallback(callback);
 }
 
 void loop() {
+  /* OTA */
   ArduinoOTA.handle();
-  if (!client.connected())
+
+  /* MQTT */
+  if (!mqtt.connected())
   {
     reconnect();
   }
-  client.loop();
+  mqtt.loop();
+
+  /* mDNS */
+  MDNS.update();
 
   if (triggerTimeout != 0 && triggerTimeout < millis()) {
     digitalWrite(D1, LOW);
