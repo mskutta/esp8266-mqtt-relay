@@ -154,6 +154,7 @@ void setup() {
   Serial.println(MDNS.port(0));
 
   mqtt.setServer(MDNS.IP(0), MDNS.port(0));
+  mqtt.setKeepAlive(60);
   mqtt.setCallback(callback);
 
   /* Pins */
